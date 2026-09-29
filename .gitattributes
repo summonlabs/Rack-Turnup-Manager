@@ -1,0 +1,8 @@
+# Normalize every text file to LF in the repository. The library builds on
+# Windows with MSVC and on POSIX toolchains; consistent line endings keep the
+# tree free of spurious diffs.
+* text=auto eol=lf
+
+*.png binary
+*.jpg binary
+*.pdf binary

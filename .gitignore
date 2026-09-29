@@ -1,0 +1,45 @@
+# Build trees produced by CMake presets or manual configuration.
+/build/
+/out/
+/install/
+/_build/
+cmake-build-*/
+CMakeUserPresets.json
+
+# CMake and test artifacts that can be regenerated.
+CMakeCache.txt
+CMakeFiles/
+CTestTestfile.cmake
+Testing/
+install_manifest.txt
+*.cmake.stamp
+
+# Compiler, linker and archive outputs.
+*.obj
+*.o
+*.lo
+*.a
+*.lib
+*.exp
+*.pdb
+*.ilk
+*.idb
+*.exe
+*.dll
+*.so
+*.dylib
+*.dSYM/
+
+# Editor and IDE state.
+.vs/
+.vscode/
+.idea/
+*.user
+*.suo
+*.swp
+
+# Local durable state produced by the CLI or the test suite.
+*.rtm
+*.rtm.watermark
+*.rtm.lock
+*.rtm.tmp*
