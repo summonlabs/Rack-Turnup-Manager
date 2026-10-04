@@ -2,7 +2,7 @@
 
 Rack Turnup Manager is a C++20 library and command line tool that decides whether
 a rack in a data center may enter service, and records the authority to do it.
-It is the physical-fleet-lifecycle component of the Data Center Control Plane: it
+It is the physical-fleet-lifecycle component: it
 composes generation-stamped evidence that other systems publish, evaluates the
 ordered readiness stages of one rack, reports exactly which subsystems are proven
 ready and which are unknown, and issues a bounded turnup authorization that is
