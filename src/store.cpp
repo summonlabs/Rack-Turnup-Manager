@@ -283,11 +283,28 @@ struct FileBytes {
   if (!wide_to.has_value()) {
     return wide_to.error();
   }
-  if (MoveFileExW(wide_from.value().c_str(), wide_to.value().c_str(),
-                  MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) == 0) {
-    return io_failure("the staged file could not be published atomically", to, GetLastError());
+  // While a reader has the target open (an inspection, a backup, an antivirus or
+  // indexing scan) the replace fails until the reader closes it, so it is
+  // retried for a bounded time (about 2 s). A directory or a read-only file in
+  // the way is not transient and fails at once.
+  for (int attempt = 0;; ++attempt) {
+    if (MoveFileExW(wide_from.value().c_str(), wide_to.value().c_str(),
+                    MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != 0) {
+      return Status{};
+    }
+    const DWORD error = GetLastError();
+    const DWORD attributes = GetFileAttributesW(wide_to.value().c_str());
+    const bool blocked =
+        attributes != INVALID_FILE_ATTRIBUTES &&
+        (attributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_READONLY)) != 0;
+    const bool transient = (error == ERROR_ACCESS_DENIED || error == ERROR_SHARING_VIOLATION ||
+                            error == ERROR_LOCK_VIOLATION) &&
+                           !blocked;
+    if (!transient || attempt >= 100) {
+      return io_failure("the staged file could not be published atomically", to, error);
+    }
+    Sleep(20);
   }
-  return Status{};
 }
 
 void remove_file(const std::string& path) noexcept {
@@ -1086,17 +1103,22 @@ Status DurableStore::commit(const ServiceState& state) {
   }
   reach_abort_point(StoreAbortPoint::AfterPublish);
 
+  // The new generation is the state file: the commit stands from here on, and
+  // the durable fencing advances with it. A failure above leaves the previous
+  // generation authoritative.
+  sequence_ = state.store_sequence;
+  epoch_ = state.store_epoch;
+
+  // The watermark records the publication for rollback detection. When it
+  // cannot be written now (a reader holds it), the published commit is not
+  // reported as failed: an older watermark is still valid for the newer state
+  // file, and the next commit writes the watermark again.
   const Status watermark_written =
       write_watermark(watermark_path_, state.store_sequence, state.store_epoch, verified.value().payload_digest);
   if (!watermark_written.has_value()) {
-    return watermark_written;
+    remove_file(watermark_path_ + ".staged");
   }
   reach_abort_point(StoreAbortPoint::AfterWatermark);
-
-  // Durable fencing advances only after the new generation is on disk and
-  // verified. A failure above leaves the previous generation authoritative.
-  sequence_ = state.store_sequence;
-  epoch_ = state.store_epoch;
   return Status{};
 }
 

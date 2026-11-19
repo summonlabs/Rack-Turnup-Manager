@@ -5,9 +5,12 @@
 
 #include "harness.hpp"
 
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <fstream>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -212,6 +215,79 @@ RTM_TEST(store, commit_sequence_is_checked) {
   must(store.commit(state));
   // The in-memory fencing advanced only after publication.
   RTM_CHECK_EQ(store.sequence().value(), std::uint64_t{1});
+}
+
+RTM_TEST(store, a_commit_waits_for_a_reader_of_the_state_file) {
+  rtmtest::TempDir directory("store");
+  const std::string path = directory.file("state.rtm");
+  rtm::DurableStore store = must(rtm::DurableStore::open(store_options(path)));
+  rtm::ServiceState state = must(store.load());
+  const auto commit_next = [&store, &state]() {
+    state.store_sequence = store.sequence().next();
+    state.store_epoch = store.epoch();
+    state.updated_at = rtm::WallClock::now();
+    return store.commit(state);
+  };
+  RTM_CHECK(commit_next().has_value());
+
+  // A reader has the state file open for a moment (an inspection, a backup, a
+  // scan) while the next commit replaces it.
+  std::ifstream reader(path, std::ios::binary);
+  const bool reader_open = static_cast<bool>(reader);
+  std::thread release([&reader] {
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+    reader.close();
+  });
+  const rtm::Status committed = commit_next();
+  release.join();
+  RTM_CHECK(reader_open);
+  RTM_CHECK(committed.has_value());
+  RTM_CHECK_EQ(store.sequence().value(), std::uint64_t{2});
+  RTM_CHECK(commit_next().has_value());
+  const rtm::Result<rtm::ServiceState> reloaded = rtm::DurableStore::read_only_load(path);
+  RTM_CHECK(reloaded.has_value());
+  if (reloaded.has_value()) {
+    RTM_CHECK_EQ(reloaded.value().store_sequence.value(), std::uint64_t{3});
+  }
+}
+
+RTM_TEST(store, a_published_commit_is_not_reported_as_failed_for_its_watermark) {
+  rtmtest::TempDir directory("store");
+  const std::string path = directory.file("state.rtm");
+  rtm::DurableStore store = must(rtm::DurableStore::open(store_options(path)));
+  rtm::ServiceState state = must(store.load());
+  const auto commit_next = [&store, &state]() {
+    state.store_sequence = store.sequence().next();
+    state.store_epoch = store.epoch();
+    state.updated_at = rtm::WallClock::now();
+    return store.commit(state);
+  };
+  RTM_CHECK(commit_next().has_value());
+  {
+    // A reader holds the watermark while a generation is committed: the state
+    // file is published, and the watermark cannot be replaced.
+    std::ifstream reader(path + ".watermark", std::ios::binary);
+    RTM_CHECK(static_cast<bool>(reader));
+    // The commit is the published state file. It is not reported as failed,
+    // and the store's fencing follows the file.
+    RTM_CHECK(commit_next().has_value());
+    RTM_CHECK_EQ(store.sequence().value(), std::uint64_t{2});
+    const rtm::Result<rtm::ServiceState> published = rtm::DurableStore::read_only_load(path);
+    RTM_CHECK(published.has_value());
+    if (published.has_value()) {
+      RTM_CHECK_EQ(published.value().store_sequence.value(), std::uint64_t{2});
+    }
+  }
+  // The next commit writes the watermark that was owed.
+  RTM_CHECK(commit_next().has_value());
+  RTM_CHECK_EQ(store.sequence().value(), std::uint64_t{3});
+  const rtm::Result<rtm::StoreInspection> inspection = rtm::DurableStore::inspect(path);
+  RTM_CHECK(inspection.has_value());
+  if (inspection.has_value()) {
+    RTM_CHECK_EQ(inspection.value().store_sequence.value(), std::uint64_t{3});
+    RTM_CHECK(inspection.value().watermark_present);
+    RTM_CHECK_EQ(inspection.value().watermark_sequence.value(), std::uint64_t{3});
+  }
 }
 
 RTM_TEST(store, every_abort_point_is_reachable) {

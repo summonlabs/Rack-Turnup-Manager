@@ -4,7 +4,8 @@
 # Licensed under the Apache License, Version 2.0.
 #
 # Run with: cmake -DBUILD_DIR=... -DSOURCE_DIR=... -DWORK_DIR=... -DGENERATOR=...
-# -DCMAKE_COMMAND=... -P installed_artifact.cmake
+# -DCMAKE_COMMAND=... [-DCONFIG=...] [-DCONSUMER_CXX_FLAGS=...]
+# [-DCONSUMER_LINK_FLAGS=...] -P installed_artifact.cmake
 #
 # The script installs the built library into a private prefix, configures an
 # independent consumer project with find_package() against that prefix, builds
@@ -48,12 +49,31 @@ if(NOT targets_text MATCHES "rack_turnup::rack_turnup")
   message(FATAL_ERROR "the exported target rack_turnup::rack_turnup is missing")
 endif()
 
-message(STATUS "configuring the out-of-tree consumer")
+# The consumer is built in the configuration the library was built in: a Debug
+# library and a Release consumer use different runtime libraries and do not
+# link (LNK2038).
+set(consumer_config "Release")
+if(DEFINED CONFIG AND NOT CONFIG STREQUAL "")
+  set(consumer_config "${CONFIG}")
+endif()
+string(TOUPPER "${consumer_config}" consumer_config_upper)
+
+message(STATUS "configuring the out-of-tree consumer (${consumer_config})")
 set(configure_command "${CMAKE_COMMAND}"
     -S "${SOURCE_DIR}/tests/packaging/consumer"
     -B "${consumer_build}"
     "-DCMAKE_PREFIX_PATH=${prefix}"
-    "-DCMAKE_BUILD_TYPE=Release")
+    "-DCMAKE_BUILD_TYPE=${consumer_config}")
+# A library built with a sanitizer links only into a consumer built with it.
+# The per-configuration link flags come last on the link line, so that is where
+# a flag such as /INCREMENTAL:NO has to go to take effect.
+if(DEFINED CONSUMER_CXX_FLAGS AND NOT CONSUMER_CXX_FLAGS STREQUAL "")
+  list(APPEND configure_command "-DCMAKE_CXX_FLAGS_INIT=${CONSUMER_CXX_FLAGS}")
+endif()
+if(DEFINED CONSUMER_LINK_FLAGS AND NOT CONSUMER_LINK_FLAGS STREQUAL "")
+  list(APPEND configure_command
+       "-DCMAKE_EXE_LINKER_FLAGS_${consumer_config_upper}=${CONSUMER_LINK_FLAGS}")
+endif()
 if(DEFINED GENERATOR AND NOT GENERATOR STREQUAL "")
   list(APPEND configure_command -G "${GENERATOR}")
 endif()
@@ -71,7 +91,7 @@ endif()
 
 message(STATUS "building the out-of-tree consumer")
 execute_process(
-  COMMAND "${CMAKE_COMMAND}" --build "${consumer_build}" --config Release
+  COMMAND "${CMAKE_COMMAND}" --build "${consumer_build}" --config "${consumer_config}"
   RESULT_VARIABLE build_result
   OUTPUT_VARIABLE build_output
   ERROR_VARIABLE build_error)

@@ -51,7 +51,10 @@ function(rack_turnup_apply_warnings target)
   target_compile_options(${target} PRIVATE ${RACK_TURNUP_WARNING_FLAGS})
   if(RACK_TURNUP_ENABLE_ASAN)
     if(MSVC)
-      target_compile_options(${target} PRIVATE /fsanitize=address)
+      # Sanitizer objects cannot be linked incrementally (LNK4300), and /Zi and
+      # /DEBUG keep their debug information (C5072 and LNK4302 without them).
+      target_compile_options(${target} PRIVATE /fsanitize=address /Zi)
+      target_link_options(${target} PRIVATE /INCREMENTAL:NO /DEBUG)
     else()
       target_compile_options(${target} PRIVATE -fsanitize=address -fno-omit-frame-pointer)
       target_link_options(${target} PRIVATE -fsanitize=address)
@@ -198,6 +201,20 @@ if(RACK_TURNUP_BUILD_TESTS AND RACK_TURNUP_IS_TOP_LEVEL)
   # Installed-artifact validation: install into a private prefix, configure an
   # independent consumer with find_package(), build it, run it, and check that
   # it reports a verdict from the installed library.
+  # The consumer is built in the configuration of this build, and a library
+  # built with a sanitizer links only into a consumer built with it.
+  set(rack_turnup_consumer_flags)
+  if(RACK_TURNUP_ENABLE_ASAN)
+    if(MSVC)
+      list(APPEND rack_turnup_consumer_flags
+           "-DCONSUMER_CXX_FLAGS=/fsanitize=address /Zi"
+           "-DCONSUMER_LINK_FLAGS=/INCREMENTAL:NO /DEBUG")
+    else()
+      list(APPEND rack_turnup_consumer_flags
+           "-DCONSUMER_CXX_FLAGS=-fsanitize=address"
+           "-DCONSUMER_LINK_FLAGS=-fsanitize=address")
+    endif()
+  endif()
   add_test(NAME installed_artifact
     COMMAND ${CMAKE_COMMAND}
       -DBUILD_DIR=${CMAKE_BINARY_DIR}
@@ -205,6 +222,8 @@ if(RACK_TURNUP_BUILD_TESTS AND RACK_TURNUP_IS_TOP_LEVEL)
       -DWORK_DIR=${CMAKE_BINARY_DIR}/installed-artifact
       -DGENERATOR=${CMAKE_GENERATOR}
       -DCXX_COMPILER=${CMAKE_CXX_COMPILER}
+      -DCONFIG=$<CONFIG>
+      ${rack_turnup_consumer_flags}
       -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/packaging/installed_artifact.cmake)
   add_dependencies(rtm_tests rack_turnup)
 endif()
